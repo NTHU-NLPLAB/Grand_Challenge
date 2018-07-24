@@ -1,17 +1,20 @@
 
 # coding: utf-8
 
-# In[18]:
+# In[1]:
 
-from GoogleTranslator import gtrans
+from googletrans import Translator
 from tools import GetFar
 from pprint import pprint
 from operator import itemgetter
+from predict.predict import *
 import jieba
 
-# import logging
-# LOG_FILENAME = 'server.log'
-# logging.basicConfig(filename=LOG_FILENAME, level=logging.DEBUG, format='%(asctime)s %(filename)s[line:%(lineno)d] %(message)s',datefmt='%Y-%m-%d')
+translator = Translator(service_urls=[
+      'translate.google.com',
+      'translate.google.com.tw/',
+    ])
+
 
 # ```
 # {
@@ -36,9 +39,7 @@ import jieba
 # }
 # ```
 
-# In[25]:
-
-from predict.predict import *
+# In[2]:
 
 def segment(sent):
     seg_list = jieba.cut(sent)
@@ -57,7 +58,7 @@ def format_data(data):
 
 
 def get_content(line):
-    return line.split('\t')[1]
+    return line.split('\t')[1] or '<NONE>'
 
 
 def to_passage(conversation):
@@ -66,37 +67,47 @@ def to_passage(conversation):
     
 
 def get_opt_pair(options):
-    return [(opt.split('\t')[0], get_content(opt)) for opt in options]
+    for opt in options:
+        yield opt.split('\t')[0], get_content(opt)
 
-    
+
+# In[5]:
+
 def main_process(datas):
     datas = [format_data(data) for data in datas]
-    
-    # for mictsai
-    model_inputs = [ {
-        'passage': gtrans( to_passage(data['conversation']) ),
-        'question': gtrans( get_content(data['question']) ),
-        'options': [(i, gtrans(opt)) for i, opt in get_opt_pair(data['options'])]
-    }   for data in datas]
 
-    #pprint(model_input)
+    model_inputs = []
+    for data in datas:
+        passage = to_passage(data['conversation'])
+        question = get_content(data['question'])
+        options = [ (i, opt) for i, opt in get_opt_pair(data['options']) ]
+        
+        content_opts = list(map(lambda x: x[1], options))
+        query = translator.translate('\n'.join( [passage, question, '\n'.join(content_opts)] ), dest='en', src='zh-TW')
+        
+        query = query.text.split('\n')
+        model_inputs.append( {
+            'passage': query[0],
+            'question': query[1],
+            'options': [(pair[0], q) for pair, q in zip(options, query[2:])]
+        } )
     results = predict_batch_json(model_inputs)
     pprint(results)
 
-    return_value = []
+    answers = []
     for result in results:
         cosine_pair = result['cosine'].items()
         ans_idx = max(cosine_pair, key=itemgetter(1))[0]
         scores = list(map(lambda pair: pair[1], cosine_pair))
-        
-        return_value.append({'answer':ans_idx, 'scores':scores})
+        answers.append({'answer': ans_idx, 'scores': scores})
+
     # First method - 反向指標
     # ans_idx, scores = GetFar(conver, opt_list)
     
-    return return_value
+    return answers   
 
 
-# In[26]:
+# In[6]:
 
 # test
 if __name__ == "__main__":
@@ -111,10 +122,7 @@ if __name__ == "__main__":
     print(main_process(test))
 
 
-# In[37]:
-
-#!/usr/bin/env python
-
+# In[ ]:
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS, cross_origin
@@ -134,10 +142,15 @@ def answer():
     if not topic: return jsonify({'status': 'wrong'})
     
     answers = main_process(topic)
-    
+
     return jsonify(answers)
 
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=1315)
+
+
+# In[ ]:
+
+
 
